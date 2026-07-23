@@ -2,7 +2,8 @@ import { motion } from 'framer-motion';
 import { useQuestionContext } from '../../context/QuestionContext';
 
 function QuestionResults() {
-  const { question, responses, loading } = useQuestionContext();
+  const { question, fullResponse, loading } = useQuestionContext();
+  const responses = fullResponse?.responses ?? [];
 
   if (!question && !loading) {
     return null;

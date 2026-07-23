@@ -1,3 +1,5 @@
+import type { ConsensusCluster } from '../../../backend/src/types/consensus';
+
 export interface AppConfig {
   apiBaseUrl: string;
 }
@@ -15,7 +17,9 @@ export interface QuestionResponse {
     model: string;
     answer: string;
     similarity: number;
+    // Add embedding if needed on frontend
   }>;
+  clusters: ConsensusCluster[]; // Add clusters from backend
   message?: string;
   submittedAt: string;
 }
@@ -38,4 +42,6 @@ export interface CompareSession {
   createdAt: string;
   expiresAt: string;
   providers: CompareSessionProvider[];
+  clusters?: ConsensusCluster[]; // Make optional for backward compatibility if needed
+  consensus?: string; // Make optional for backward compatibility if needed
 }

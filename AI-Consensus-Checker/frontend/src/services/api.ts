@@ -1,6 +1,12 @@
 import axios from 'axios';
 import type { QuestionRequest, QuestionResponse } from '../types';
 
+interface ApiResponse<T> {
+  success: boolean;
+  message: string;
+  data: T;
+}
+
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://localhost:5000';
 
 const api = axios.create({
@@ -12,8 +18,8 @@ export async function submitQuestionRequest(question: string): Promise<QuestionR
   const payload: QuestionRequest = { question };
 
   try {
-    const response = await api.post<QuestionResponse>('/api/ask', payload);
-    return response.data;
+    const response = await api.post<ApiResponse<QuestionResponse>>('/api/ask', payload);
+    return response.data.data;
   } catch (error) {
     if (axios.isAxiosError(error)) {
       if (error.code === 'ECONNABORTED') {

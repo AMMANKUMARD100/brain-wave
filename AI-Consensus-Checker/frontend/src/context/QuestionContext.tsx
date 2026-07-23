@@ -6,9 +6,12 @@ import type { QuestionResponse } from '../types';
 interface QuestionContextValue {
   question: string;
   loading: boolean;
+  // Store the full QuestionResponse object
+  fullResponse: QuestionResponse | null;
   responses: QuestionResponse['responses'];
   submitQuestion: (question: string) => Promise<QuestionResponse | undefined>;
   isSubmitting: boolean;
+  clearQuestion: () => void;
 }
 
 const QuestionContext = createContext<QuestionContextValue | undefined>(undefined);
@@ -16,7 +19,7 @@ const QuestionContext = createContext<QuestionContextValue | undefined>(undefine
 export function QuestionProvider({ children }: { children: React.ReactNode }) {
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
-  const [responses, setResponses] = useState<QuestionResponse['responses']>([]);
+  const [fullResponse, setFullResponse] = useState<QuestionResponse | null>(null);
 
   const submitQuestion = async (nextQuestion: string): Promise<QuestionResponse | undefined> => {
     if (!nextQuestion.trim()) {
@@ -25,10 +28,11 @@ export function QuestionProvider({ children }: { children: React.ReactNode }) {
     }
 
     setLoading(true);
+    setFullResponse(null); // Clear previous response
     try {
       const response = await submitQuestionRequest(nextQuestion);
       setQuestion(nextQuestion);
-      setResponses(response.responses);
+      setFullResponse(response);
       toast.success('Question submitted successfully.');
       return response;
     } catch (error) {
@@ -40,9 +44,17 @@ export function QuestionProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const clearQuestion = () => {
+    setQuestion('');
+    setFullResponse(null);
+    setLoading(false);
+  };
+
+  const responses = fullResponse?.responses ?? [];
+
   const value = useMemo(
-    () => ({ question, loading, responses, submitQuestion, isSubmitting: loading }),
-    [question, loading, responses],
+    () => ({ question, loading, fullResponse, responses, submitQuestion, isSubmitting: loading, clearQuestion }),
+    [question, loading, fullResponse, responses],
   );
 
   return <QuestionContext.Provider value={value}>{children}</QuestionContext.Provider>;

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { useQuestionContext } from './QuestionContext';
-import { submitQuestionRequest } from '../services/api';
+import { getAnswerMetrics } from '../utils/answerMetrics';
 import type { QuestionResponse } from '../types';
 
 export type ProviderCardStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -54,38 +54,24 @@ function buildZeroState(): AnswerCardState[] {
   }));
 }
 
-function getStatistics(answer: string) {
-  const words = answer.trim().split(/\s+/).filter(Boolean);
-  const wordCount = words.length;
-  const charCount = answer.length;
-  const responseTime = Math.min(9500, Math.max(280, Math.round(wordCount * 18 + Math.random() * 150)));
-  const estimatedCost = Number((wordCount * 0.0001 + Math.random() * 0.00008).toFixed(5));
-
-  return { wordCount, charCount, responseTime, estimatedCost };
-}
-
-function isErrorAnswer(answer: string) {
-  return /unable|no answer|missing|failed|error/i.test(answer.trim());
-}
-
-function buildCardState(response: QuestionResponse['responses'][number], providerMeta: ProviderMeta): AnswerCardState {
-  const answer = response.answer || '';
-  const errorDetected = isErrorAnswer(answer);
-  const stats = getStatistics(answer);
+function buildCardStateFromBackendResponse(responseItem: QuestionResponse['responses'][number], providerMeta: ProviderMeta): AnswerCardState {
+  const answer = responseItem.answer || '';
+  const answerMetrics = getAnswerMetrics(answer);
+  const hasAnswer = answer.trim().length > 0;
 
   return {
-    id: providerMeta.id,
+    id: responseItem.id,
     providerName: providerMeta.name,
-    modelName: response.model || providerMeta.defaultModel,
-    status: errorDetected ? 'error' : 'success',
-    answer: errorDetected ? answer : answer,
-    wordCount: stats.wordCount,
-    charCount: stats.charCount,
-    responseTime: stats.responseTime,
-    estimatedCost: stats.estimatedCost,
+    modelName: responseItem.model || providerMeta.defaultModel,
+    status: hasAnswer ? 'success' : 'error',
+    answer,
+    wordCount: answerMetrics.wordCount,
+    charCount: answerMetrics.charCount,
+    responseTime: answerMetrics.responseTime,
+    estimatedCost: answerMetrics.estimatedCost,
     timestamp: new Date().toISOString(),
-    errorReason: errorDetected ? answer || 'Unknown provider error.' : undefined,
-    isExpanded: !errorDetected,
+    errorReason: hasAnswer ? undefined : 'No answer returned from provider.',
+    isExpanded: hasAnswer,
     isRetrying: false,
   };
 }
@@ -100,7 +86,7 @@ interface AnswerDashboardContextValue {
 const AnswerDashboardContext = createContext<AnswerDashboardContextValue | undefined>(undefined);
 
 export function AnswerDashboardProvider({ children }: { children: React.ReactNode }) {
-  const { question, responses, loading } = useQuestionContext();
+  const { question, fullResponse, loading, submitQuestion } = useQuestionContext();
   const [cards, setCards] = useState<AnswerCardState[]>(buildZeroState());
   const activeTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -113,17 +99,17 @@ export function AnswerDashboardProvider({ children }: { children: React.ReactNod
   }, [loading, question]);
 
   useEffect(() => {
-    if (!loading && responses.length > 0) {
+    if (!loading && fullResponse) {
       activeTimeouts.current.forEach(clearTimeout);
       activeTimeouts.current = [];
 
-      const failedProviders = responses.filter((item) => isErrorAnswer(item.answer));
+      const failedProviders = fullResponse.responses.filter((item) => !item.answer || item.answer.trim().length === 0);
       if (failedProviders.length > 0) {
         toast.error(`${failedProviders.length} provider${failedProviders.length > 1 ? 's' : ''} failed to return a valid answer.`);
       }
 
       const nextStates = providerMetadata.map((provider) => {
-        const providerResponse = responses.find((item) => item.id.startsWith(provider.idPrefix));
+        const providerResponse = fullResponse.responses.find((item) => item.id.startsWith(provider.idPrefix));
         if (!providerResponse) {
           return {
             ...buildZeroState().find((card) => card.id === provider.id)!,
@@ -133,7 +119,7 @@ export function AnswerDashboardProvider({ children }: { children: React.ReactNod
             timestamp: new Date().toISOString(),
           };
         }
-        return buildCardState(providerResponse, provider);
+        return buildCardStateFromBackendResponse(providerResponse, provider);
       });
 
       nextStates.forEach((card, index) => {
@@ -148,7 +134,7 @@ export function AnswerDashboardProvider({ children }: { children: React.ReactNod
       activeTimeouts.current.forEach(clearTimeout);
       activeTimeouts.current = [];
     };
-  }, [loading, responses]);
+  }, [loading, fullResponse]);
 
   const retryProvider = useCallback(async (providerId: string) => {
     setCards((current) =>
@@ -161,33 +147,47 @@ export function AnswerDashboardProvider({ children }: { children: React.ReactNod
       return;
     }
 
-    const latestResponse = await submitQuestionRequest(question);
-    const provider = providerMetadata.find((item) => item.id === providerId);
-    if (!provider) {
-      return;
-    }
+    // Re-submit the entire question to get fresh responses for all providers
+    // The backend will handle retries for individual providers
+    const latestFullResponse = await submitQuestion(question);
 
-    const updatedResponse = latestResponse.responses.find((item) => item.id.startsWith(provider.idPrefix));
-    if (!updatedResponse) {
+    if (latestFullResponse) {
+      const provider = providerMetadata.find((item) => item.id === providerId);
+      if (!provider) {
+        return;
+      }
+
+      const updatedResponseItem = latestFullResponse.responses.find((item) => item.id.startsWith(provider.idPrefix));
+
+      if (updatedResponseItem) {
+        const updatedCard = buildCardStateFromBackendResponse(updatedResponseItem, provider);
+        setCards((current) => current.map((card) => (card.id === providerId ? { ...updatedCard, isRetrying: false } : card)));
+      } else {
+        setCards((current) =>
+          current.map((card) =>
+            card.id === providerId
+              ? {
+                  ...card,
+                  status: 'error',
+                  errorReason: 'Provider response was not returned during retry.',
+                  answer: 'Provider retry failed. Please try again later.',
+                  isRetrying: false,
+                }
+              : card,
+          ),
+        );
+      }
+    } else {
+      // If the overall submission failed, reset the retrying state
       setCards((current) =>
         current.map((card) =>
           card.id === providerId
-            ? {
-                ...card,
-                status: 'error',
-                errorReason: 'Provider response was not returned during retry.',
-                answer: 'Provider retry failed. Please try again later.',
-                isRetrying: false,
-              }
+            ? { ...card, isRetrying: false, status: 'error', errorReason: 'Overall submission failed during retry.' }
             : card,
         ),
       );
-      return;
     }
-
-    const updatedCard = buildCardState(updatedResponse, provider);
-    setCards((current) => current.map((card) => (card.id === providerId ? updatedCard : card)));
-  }, [question]);
+  }, [question, submitQuestion]);
 
   const toggleExpand = useCallback((providerId: string) => {
     setCards((current) =>
@@ -197,7 +197,7 @@ export function AnswerDashboardProvider({ children }: { children: React.ReactNod
 
   const value = useMemo(
     () => ({ cards, isLoading: loading, retryProvider, toggleExpand }),
-    [cards, loading],
+    [cards, loading, retryProvider, toggleExpand],
   );
 
   return <AnswerDashboardContext.Provider value={value}>{children}</AnswerDashboardContext.Provider>;
